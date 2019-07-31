@@ -114,7 +114,8 @@ SystemUI::SystemUI(Urho3D::Context* context)
 
 SystemUI::~SystemUI()
 {
-    ImGui::EndFrame();
+    if (imContext_->FrameScopeActive)
+        ImGui::EndFrame();
     ImGui::Shutdown(imContext_);
     ImGui::DestroyContext(imContext_);
 }
