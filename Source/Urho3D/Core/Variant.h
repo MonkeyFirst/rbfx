@@ -27,6 +27,7 @@
 #include <EASTL/unique_ptr.h>
 
 #include "../Container/Ptr.h"
+#include "../Core/TypeTrait.h"
 #include "../Math/Color.h"
 #include "../Math/Matrix3.h"
 #include "../Math/Matrix3x4.h"
@@ -37,6 +38,8 @@
 
 namespace Urho3D
 {
+
+class Archive;
 
 /// Variant's supported types.
 enum VariantType : unsigned char
@@ -206,23 +209,78 @@ public:
     virtual bool IsZero() const { return false; }
     /// Convert custom value to string.
     virtual ea::string ToString() const { return EMPTY_STRING; }
+    /// Serialize to Archive.
+    virtual bool Serialize(Archive& archive) { (void)archive; return false; }
 
 private:
     /// Type info.
     const std::type_info& typeInfo_{ typeid(void) };
 };
 
+URHO3D_TYPE_TRAIT(IsEquallyComparable, std::declval<T>() == std::declval<T>());
+URHO3D_TYPE_TRAIT(IsConvertibleToString, std::declval<T>().ToString());
+URHO3D_TYPE_TRAIT(IsArchiveSerializable, SerializeValue(std::declval<Archive&>(), "", std::declval<T&>()));
+
 /// Custom variant value type traits. Specialize the template to implement custom type behavior.
 template <class T> struct CustomVariantValueTraits
 {
     /// Copy value.
-    static void Copy(T& dest, const T& src) { dest = src; }
+    static void Copy(T& dest, const T& src)
+    {
+        dest = src;
+    }
     /// Compare values.
-    static bool Compare(const T& lhs, const T& rhs) { (void)lhs, (void)rhs; return false; }
+    static bool Compare(const T& lhs, const T& rhs)
+    {
+        if constexpr (IsEquallyComparable<T>::value)
+        {
+            return lhs == rhs;
+        }
+        else
+        {
+            (void)lhs, rhs;
+            return false;
+        }
+    }
     /// Check whether the value is zero.
-    static bool IsZero(const T& value) { (void)value; return false; }
+    static bool IsZero(const T& value)
+    {
+        if constexpr (IsEquallyComparable<T>::value && std::is_default_constructible<T>::value)
+        {
+            return value == T{};
+        }
+        else
+        {
+            (void)value;
+            return false;
+        }
+    }
     /// Convert type to string.
-    static ea::string ToString(const T& value) { (void)value; return EMPTY_STRING; }
+    static ea::string ToString(const T& value)
+    {
+        if constexpr (IsConvertibleToString<T>::value)
+        {
+            return value.ToString();
+        }
+        else
+        {
+            (void)value;
+            return EMPTY_STRING;
+        }
+    }
+    /// Serialize type.
+    static bool Serialize(Archive& archive, T& value)
+    {
+        if constexpr (IsArchiveSerializable<T>::value)
+        {
+            return SerializeValue(archive, "value", value);
+        }
+        else
+        {
+            (void)value, archive;
+            return false;
+        }
+    }
 };
 
 /// Custom variant value type traits for unique_ptr.
@@ -236,6 +294,8 @@ template <class T> struct CustomVariantValueTraits<ea::unique_ptr<T>>
     static bool IsZero(const ea::unique_ptr<T>& value) { return CustomVariantValueTraits<T>::IsZero(*value); }
     /// Convert type to string.
     static ea::string ToString(const ea::unique_ptr<T>& value) { return CustomVariantValueTraits<T>::ToString(*value); }
+    /// Serialize type.
+    static bool Serialize(Archive& archive, ea::unique_ptr<T>& value) { return CustomVariantValueTraits<T>::Serialize(archive, *value); }
 };
 
 /// Custom variant value implementation.
@@ -282,6 +342,8 @@ public:
     bool IsZero() const override { return Traits::IsZero(value_);}
     /// Convert custom value to string.
     ea::string ToString() const override { return Traits::ToString(value_); }
+    /// Serialize to Archive.
+    bool Serialize(Archive& archive) override { return Traits::Serialize(archive, value_); }
 
 private:
     /// Value.
@@ -292,7 +354,7 @@ private:
 static const unsigned VARIANT_VALUE_SIZE = sizeof(void*) * 4;
 
 /// Checks whether the custom variant type could be stored on stack.
-template <class T> inline bool IsCustomTypeOnStack() { return sizeof(CustomVariantValueImpl<T>) <= VARIANT_VALUE_SIZE; }
+template <class T> constexpr bool IsCustomTypeOnStack() { return sizeof(CustomVariantValueImpl<T>) <= VARIANT_VALUE_SIZE; }
 
 /// Union for the possible variant values. Objects exceeding the VARIANT_VALUE_SIZE are allocated on the heap.
 union VariantValue
@@ -1103,7 +1165,7 @@ public:
         SetType(VAR_CUSTOM);
         value_.AsCustomValue().~CustomVariantValue();
 
-        if (IsCustomTypeOnStack<T>())
+        if constexpr (IsCustomTypeOnStack<T>())
             new (value_.storage_) CustomVariantValueImpl<T>(ea::move(value));
         else
             new (value_.storage_) CustomVariantValueImpl<ea::unique_ptr<T>>(ea::make_unique<T>(ea::move(value)));
@@ -1385,7 +1447,7 @@ public:
     {
         if (const CustomVariantValue* value = GetCustomVariantValuePtr())
         {
-            if (IsCustomTypeOnStack<T>())
+            if constexpr (IsCustomTypeOnStack<T>())
             {
                 return value->GetValuePtr<T>();
             }
